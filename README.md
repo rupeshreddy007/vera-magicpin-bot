@@ -118,7 +118,3 @@ Vera Composer is a **production-ready message composition engine** that generate
 
 **Key Innovation**: 4-lever framework (Proof, Urgency, Curiosity, Action) + category voice rules = messages that score 8-9/10 across all judge dimensions.
 
-**Expected Score**: 43-45/50 
-
-**Deployment**: REST API (Flask) deployed to Render/Railway  
-**Status**: Ready for submission
