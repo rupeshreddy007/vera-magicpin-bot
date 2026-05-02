@@ -1,5 +1,16 @@
 __pycache__/
 *.pyc
+*.pyo
 .env
+.env.*
+!.env.example
 expanded/
 *.egg-info/
+dist/
+build/
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+docs/internal/
