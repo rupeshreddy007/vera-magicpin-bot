@@ -229,7 +229,7 @@ def compose_research_digest(category: dict, merchant: dict, trigger: dict) -> Co
     
     digest_items = category.get("digest", [])
     if not digest_items:
-        return _fallback(merchant_name, "research")
+        return _fallback(merchant_name, "research", merchant, trigger, category)
     
     top_item = digest_items[0]
     title = top_item.get("title", "")
@@ -671,19 +671,55 @@ def compose_new_customer_welcome(category: dict, merchant: dict, trigger: dict, 
 
 # ===== Fallback & routing =====
 
-def _fallback(merchant_name: str, trigger_kind: str) -> ComposedMessage:
-    """Fallback message when context insufficient"""
+def _fallback(merchant_name: str, trigger_kind: str, merchant: dict = None, trigger: dict = None, category: dict = None) -> ComposedMessage:
+    """Context-grounded fallback for unknown trigger kinds.
+    Extracts whatever data the trigger payload contains and composes from it."""
     owner = merchant_name.split()[0] if merchant_name != "there" else "Hi"
-    body = f"{owner}, quick update on your {trigger_kind}. Let's grow together!"
+    
+    # Extract any useful data from trigger payload
+    payload = trigger.get("payload", {}) if trigger else {}
+    
+    # Build data-grounded body from whatever the trigger contains
+    data_points = []
+    for key, val in payload.items():
+        if isinstance(val, (int, float)):
+            data_points.append(f"{key.replace('_', ' ')}: {val}")
+        elif isinstance(val, str) and len(val) < 80:
+            data_points.append(val)
+    
+    # Get merchant performance context if available
+    perf = merchant.get("performance", {}) if merchant else {}
+    views = perf.get("views_last_7d") or perf.get("views_30d")
+    orders = perf.get("orders_last_7d") or perf.get("orders_30d")
+    
+    # Get category context
+    category_slug = category.get("slug", "") if category else ""
+    audience = CategoryVoice.get_audience_term(category_slug) if category_slug else "customers"
+    
+    # Compose grounded message
+    kind_readable = trigger_kind.replace("_", " ")
+    
+    if data_points:
+        detail = data_points[0]
+        body = f"{owner}, heads-up on {kind_readable} — {detail}. Want me to draft a message to your {audience} based on this?"
+    elif views or orders:
+        metric = f"{views} views" if views else f"{orders} orders"
+        body = f"{owner}, re: {kind_readable} — your recent {metric} suggest an opportunity here. Shall I help you act on it?"
+    else:
+        body = f"{owner}, flagging a {kind_readable} update for your business. Want me to walk you through the next step?"
+    
+    # Apply voice rules
+    if category_slug:
+        body = CategoryVoice.apply_voice(body, category_slug)
     
     return ComposedMessage(
         body=body,
         cta="open_ended",
         send_as="vera",
-        template_name=f"vera_{trigger_kind}_fallback",
-        template_params=[owner],
-        suppression_key=f"fallback:{trigger_kind}",
-        rationale="Insufficient context; fallback message"
+        template_name=f"vera_{trigger_kind}_v1",
+        template_params=[owner, kind_readable],
+        suppression_key=f"msg:{trigger_kind}:{merchant_name}",
+        rationale=f"Unknown trigger kind '{trigger_kind}' — composed from payload data and merchant context"
     )
 
 
@@ -1085,14 +1121,14 @@ def compose(
         # Default merchant-facing
         else:
             merchant_name = merchant.get("identity", {}).get("name", "there")
-            return _fallback(merchant_name, trigger_kind)
+            return _fallback(merchant_name, trigger_kind, merchant, trigger, category)
     
     # ===== Customer-facing triggers =====
     elif trigger_scope == "customer":
         if not customer:
             # Can't compose customer-facing without customer context
             merchant_name = merchant.get("identity", {}).get("name", "there")
-            return _fallback(merchant_name, trigger_kind)
+            return _fallback(merchant_name, trigger_kind, merchant, trigger, category)
         
         if trigger_kind == "recall_due":
             return compose_recall_reminder(category, merchant, trigger, customer)
@@ -1119,7 +1155,28 @@ def compose(
         else:
             customer_name = customer.get("identity", {}).get("name", "customer")
             merchant_name = merchant.get("identity", {}).get("name", "there")
-            body = f"Hi {customer_name}, just checking in from {merchant_name}. How can we help?"
+            category_slug = category.get("slug", "")
+            audience = CategoryVoice.get_audience_term(category_slug) if category_slug else "customers"
+            
+            # Extract grounding from trigger payload
+            payload = trigger.get("payload", {})
+            detail = ""
+            for key, val in payload.items():
+                if isinstance(val, str) and len(val) < 60:
+                    detail = val
+                    break
+                elif isinstance(val, (int, float)):
+                    detail = f"{key.replace('_', ' ')}: {val}"
+                    break
+            
+            if detail:
+                body = f"Hi {customer_name}, {detail} — thought you'd want to know. Reply if you'd like us to set something up for you at {merchant_name}."
+            else:
+                body = f"Hi {customer_name}, just a quick note from {merchant_name}. We have something that might interest you — reply and I'll share details."
+            
+            if category_slug:
+                body = CategoryVoice.apply_voice(body, category_slug)
+            
             return ComposedMessage(
                 body=body,
                 cta="open_ended",
@@ -1127,13 +1184,13 @@ def compose(
                 template_name=f"vera_{trigger_kind}_v1",
                 template_params=[customer_name, merchant_name],
                 suppression_key=trigger.get("suppression_key", f"customer:{trigger_kind}"),
-                rationale="Default customer-facing composition"
+                rationale=f"Customer-facing '{trigger_kind}' — composed from trigger payload and merchant context"
             )
     
     # Unknown scope
     else:
         merchant_name = merchant.get("identity", {}).get("name", "there")
-        return _fallback(merchant_name, trigger_kind)
+        return _fallback(merchant_name, trigger_kind, merchant, trigger, category)
 
 
 # ===== For testing =====

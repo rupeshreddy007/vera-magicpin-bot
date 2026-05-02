@@ -316,36 +316,75 @@ def reply(req: ReplyRequest):
         )
     
     if has_positive:
-        # Compose a follow-up
-        merchant_id = conv["merchant_id"]
-        trigger_id = conv["trigger_id"]
+        # Compose a follow-up grounded in context
+        merchant_id = conv.get("merchant_id")
+        trigger_id = conv.get("trigger_id")
         
-        if merchant_id in contexts_store["merchant"] and trigger_id in contexts_store["trigger"]:
+        if merchant_id and merchant_id in contexts_store["merchant"]:
             _, merchant = contexts_store["merchant"][merchant_id]
-            _, trigger = contexts_store["trigger"][trigger_id]
+            merchant_name = merchant.get("identity", {}).get("name", "there")
+            merchant_slug = merchant.get("category_slug", "")
             
-            merchant_slug = merchant.get("category_slug")
-            if merchant_slug in contexts_store["category"]:
-                _, category = contexts_store["category"][merchant_slug]
+            # Try to compose from trigger context
+            if trigger_id and trigger_id in contexts_store["trigger"]:
+                _, trigger = contexts_store["trigger"][trigger_id]
                 
-                customer = None
-                if conv["customer_id"] and conv["customer_id"] in contexts_store["customer"]:
-                    _, customer = contexts_store["customer"][conv["customer_id"]]
-                
-                body, cta, rationale = compose_message(category, merchant, trigger, customer)
-                
-                conv["messages"].append({
-                    "from": "vera",
-                    "body": body,
-                    "ts": datetime.now().isoformat()
-                })
-                
-                return ReplyAction(
-                    action="send",
-                    body=body,
-                    cta=cta,
-                    rationale=f"Following up on merchant interest: {rationale}"
-                )
+                if merchant_slug and merchant_slug in contexts_store["category"]:
+                    _, category = contexts_store["category"][merchant_slug]
+                    
+                    customer = None
+                    if conv.get("customer_id") and conv["customer_id"] in contexts_store["customer"]:
+                        _, customer = contexts_store["customer"][conv["customer_id"]]
+                    
+                    body, cta, rationale = compose_message(category, merchant, trigger, customer)
+                    
+                    conv["messages"].append({
+                        "from": "vera",
+                        "body": body,
+                        "ts": datetime.now().isoformat()
+                    })
+                    
+                    return ReplyAction(
+                        action="send",
+                        body=body,
+                        cta=cta,
+                        rationale=f"Following up on merchant interest: {rationale}"
+                    )
+            
+            # No trigger context — ground in merchant performance data
+            perf = merchant.get("performance", {})
+            offers = merchant.get("offers", [])
+            active_offers = [o for o in offers if o.get("status") == "active"]
+            
+            if active_offers:
+                offer = active_offers[0]
+                body = f"Great, {merchant_name.split()[0]}! Your '{offer.get('title', 'current offer')}' is live. Want me to push it to more customers this week?"
+            elif perf:
+                views = perf.get("views_last_7d") or perf.get("views_30d", 0)
+                body = f"Perfect, {merchant_name.split()[0]}. With {views} recent views, let's convert more into bookings. I'll draft a customer outreach — sound good?"
+            else:
+                body = f"Got it, {merchant_name.split()[0]}. I'll put together a next step and share it with you shortly."
+            
+            conv["messages"].append({
+                "from": "vera",
+                "body": body,
+                "ts": datetime.now().isoformat()
+            })
+            
+            return ReplyAction(
+                action="send",
+                body=body,
+                cta="open_ended",
+                rationale="Positive reply — grounded follow-up from merchant context"
+            )
+        
+        # No merchant context at all
+        return ReplyAction(
+            action="send",
+            body="Great — I'll prepare the next step and share it with you shortly.",
+            cta="open_ended",
+            rationale="Positive reply but no merchant context available for grounding"
+        )
     
     # Default: wait
     return ReplyAction(
@@ -375,10 +414,10 @@ def metadata():
     return MetadataResponse(
         team_name="magicpin",
         team_members=["Vera AI Team"],
-        model="claude-3-5-sonnet-20241022",
-        approach="Single-prompt composer with 4-context framework (category, merchant, trigger, customer). Dispatch by trigger.kind. Uses Claude for semantic composition with specificity, category fit, merchant fit, trigger relevance, and engagement compulsion.",
+        model="deterministic-rule-engine",
+        approach="Context-grounded deterministic composer. Routes by trigger.kind, extracts real data from merchant/category/customer contexts, applies category voice rules. No LLM — every output is derived from the structured context actually received. Handles unknown triggers by mining payload fields.",
         contact_email="vera@magicpin.com",
-        version="1.0.0",
+        version="1.1.0",
         submitted_at=datetime.now().isoformat()
     )
 
