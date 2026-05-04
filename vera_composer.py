@@ -234,15 +234,28 @@ def compose_research_digest(category: dict, merchant: dict, trigger: dict) -> Co
     top_item = digest_items[0]
     title = top_item.get("title", "")
     source = top_item.get("source", "")
+    snippet = top_item.get("snippet", "")
+    published = top_item.get("published", "")
     
     # Check merchant-specific fit
     merchant_signals = merchant.get("signals", [])
     merchant_offers = [o for o in merchant.get("offers", []) if o.get("status") == "active"]
+    perf = merchant.get("performance", {})
+    audience = CategoryVoice.get_audience_term(category_slug)
     
     # Compose message with specificity and urgency
     owner_salute = f"{merchant_owner}," if merchant_owner else f"{merchant_name.split()[0]},"
     
-    body = f"{owner_salute} {source} research just dropped—trending in your category right now. {title}. Worth a 2-min read. Should I draft a customer message you can send this week?"
+    # Ground in digest content + merchant state
+    detail = snippet[:120] if snippet else title
+    
+    # Connect digest to merchant signals if possible
+    signal_connection = ""
+    if merchant_signals:
+        sig = merchant_signals[0].replace("_", " ")
+        signal_connection = f" (relevant given your {sig})."
+    
+    body = f"{owner_salute} new from {source}: \"{detail}\"{signal_connection} This affects how {audience} find you. Should I draft an action plan based on this?"
     
     # PHASE 2: Apply category voice rules
     body = CategoryVoice.apply_voice(body, category_slug)
@@ -268,6 +281,8 @@ def compose_performance_dip(category: dict, merchant: dict, trigger: dict) -> Co
     payload = trigger.get("payload", {})
     metric = payload.get("metric", "calls")
     delta_pct = payload.get("delta_pct", -0.20)
+    current_val = payload.get("current")
+    previous_val = payload.get("previous")
     
     owner_salute = f"{merchant_owner}," if merchant_owner else f"{merchant_name.split()[0]},"
     dip_pct = abs(int(delta_pct * 100))
@@ -276,27 +291,42 @@ def compose_performance_dip(category: dict, merchant: dict, trigger: dict) -> Co
     audience_term = CategoryVoice.get_audience_term(category_slug)
     metric_term = CategoryVoice.get_metric_term(category_slug)
     
-    # DECISION QUALITY: Pick ONE signal (not all) + URGENCY: Add benchmark & recovery window
+    # Get peer stats for comparison
+    peer_stats = category.get("peer_stats", {})
+    peer_avg = peer_stats.get(f"avg_{metric}", peer_stats.get("avg_calls", 0))
+    
+    # Build specific numbers string
+    numbers_str = ""
+    if current_val is not None and previous_val is not None:
+        numbers_str = f" ({previous_val} → {current_val})"
+    elif current_val is not None:
+        numbers_str = f" (currently {current_val})"
+    
+    peer_str = ""
+    if peer_avg:
+        peer_str = f" Category avg: {peer_avg}."
+    
+    # DECISION QUALITY: Pick ONE signal (not all)
     merchant_signals = merchant.get("signals", [])
     
     if "stale_photos" in merchant_signals:
-        diagnosis = f"Your {metric_term} dropped {dip_pct}% (outdated photos hiding your work)."
+        diagnosis = f"Your {metric_term} dropped {dip_pct}%{numbers_str} — outdated photos are hiding your work from {audience_term}."
         peer_benchmark = CategoryVoice.benchmark_format("+8 queries from weekly updates", category_slug)
-        action = "Update 3 best photos this week?"
+        action = "Update your 3 best-performing photos this week?"
     elif "incomplete_profile" in merchant_signals:
-        diagnosis = f"Your {metric_term} dropped {dip_pct}% (incomplete profile blocks searches)."
+        diagnosis = f"Your {metric_term} dropped {dip_pct}%{numbers_str} — incomplete profile is blocking you in search results."
         peer_benchmark = CategoryVoice.benchmark_format("40% lift from complete info", category_slug)
-        action = "Complete your full profile today?"
+        action = "Complete your profile today? Takes 5 minutes."
     elif "low_rating" in merchant_signals:
-        diagnosis = f"Your {metric_term} dropped {dip_pct}% (ratings below 4 stars)."
-        peer_benchmark = CategoryVoice.benchmark_format("Responding lifts ratings 0.3★ avg", category_slug)
-        action = "Reply to recent reviews now?"
+        diagnosis = f"Your {metric_term} dropped {dip_pct}%{numbers_str} — ratings below 4 stars push you lower in results."
+        peer_benchmark = CategoryVoice.benchmark_format("Responding lifts ratings 0.3 avg", category_slug)
+        action = "Reply to your 3 most recent reviews now?"
     else:
-        diagnosis = f"Your {metric_term} dropped {dip_pct}% this week."
+        diagnosis = f"Your {metric_term} dropped {dip_pct}%{numbers_str} this week."
         peer_benchmark = CategoryVoice.benchmark_format("Top performers optimize weekly", category_slug)
-        action = f"Let's diagnose. What changed?"
+        action = "Let's diagnose — what changed on your end?"
     
-    body = f"{owner_salute} {diagnosis} {peer_benchmark}. {action}"
+    body = f"{owner_salute} {diagnosis}{peer_str} {peer_benchmark}. {action}"
     
     # PHASE 2: Apply category voice rules
     body = CategoryVoice.apply_voice(body, category_slug)
@@ -438,11 +468,28 @@ def compose_festival_upcoming(category: dict, merchant: dict, trigger: dict) -> 
     owner_salute = f"{merchant_owner}," if merchant_owner else f"{merchant_name.split()[0]},"
     
     # Festival urgency: add search volume + prep deadline + category-specific action
-    search_lift = CategoryVoice.benchmark_format("60% search lift", category_slug)
-    estimated_searches = 1440
+    # Extract real data from payload and category
+    search_lift_pct = payload.get("search_lift_pct", 60)
+    estimated_searches = payload.get("estimated_searches", 0)
     audience_term = CategoryVoice.get_audience_term(category_slug)
     
-    body = f"{owner_salute} {festival} prep—your category sees {search_lift}. ~{estimated_searches} {audience_term} searching locally. Campaign needs prep this week. Special offer ready? I'll draft copy today, you pre-sell this week?"
+    # Ground in merchant's current performance
+    perf = merchant.get("performance", {})
+    views = perf.get("views_last_7d") or perf.get("views_30d", 0)
+    offers = merchant.get("offers", [])
+    active_offers = [o for o in offers if o.get("status") == "active"]
+    
+    search_str = f"~{estimated_searches} {audience_term} searching locally" if estimated_searches else f"{search_lift_pct}% search lift in your category"
+    
+    offer_str = ""
+    if active_offers:
+        offer_str = f" Your '{active_offers[0].get('title', 'current offer')}' is a good fit — want me to push it?"
+    else:
+        offer_str = f" No active offer right now — I can help you create one in 2 minutes."
+    
+    views_str = f" You're getting {views} views — a {festival} campaign can double that." if views else ""
+    
+    body = f"{owner_salute} {festival} is {days_until} days out. {search_str}.{views_str}{offer_str}"
     
     # Apply category voice
     body = CategoryVoice.apply_voice(body, category_slug)
@@ -470,14 +517,35 @@ def compose_regulation_change(category: dict, merchant: dict, trigger: dict) -> 
     title = payload.get("title", regulation_item.get("title", f"New {category_slug} compliance"))
     deadline = payload.get("deadline_iso", "").split("T")[0] if payload.get("deadline_iso") else "soon"
     days_until = payload.get("days_until_deadline", 30)
+    description = payload.get("description", regulation_item.get("snippet", ""))
     
     owner_salute = f"{merchant_owner}," if merchant_owner else f"{merchant_name.split()[0]},"
     
     # Add compliance urgency and consequence + category-specific language
     audience_term = CategoryVoice.get_audience_term(category_slug)
-    consequence_text = CategoryVoice.benchmark_format("70% visibility drop", category_slug)
-    consequence = f"Deadline in {days_until} days. Miss it: {consequence_text}." if days_until > 0 else "Currently expired. Full visibility blocked."
-    body = f"{owner_salute} {title}. {consequence} Update credentials today? 3 mins, unlocks access to {audience_term}."
+    
+    # Ground in merchant's current state
+    perf = merchant.get("performance", {})
+    signals = merchant.get("signals", [])
+    views = perf.get("views_last_7d") or perf.get("views_30d", 0)
+    
+    # Build specific consequence
+    if days_until <= 7:
+        urgency = f"Deadline in {days_until} days — urgent."
+    elif days_until <= 30:
+        urgency = f"Deadline: {deadline} ({days_until} days out)."
+    else:
+        urgency = f"{days_until} days until deadline."
+    
+    consequence = f"Non-compliance hides your listing from {audience_term} searching in your area"
+    if views:
+        consequence += f" (you currently get {views} views)"
+    consequence += "."
+    
+    # Specific detail from description
+    detail = f" Key change: {description[:100]}." if description else ""
+    
+    body = f"{owner_salute} {title}.{detail} {urgency} {consequence} Update your credentials now — takes 3 minutes. Need help?"
     
     # Apply category voice
     body = CategoryVoice.apply_voice(body, category_slug)
@@ -568,30 +636,49 @@ def compose_recall_reminder(category: dict, merchant: dict, trigger: dict, custo
     """Customer recall due (service appointment, checkup, cleaning, etc.)"""
     
     merchant_name = merchant.get("identity", {}).get("name", "")
+    merchant_owner = merchant.get("identity", {}).get("owner_first_name", "")
     customer_name = customer.get("identity", {}).get("name", "there")
+    category_slug = category.get("slug", "business")
     
     payload = trigger.get("payload", {})
     service_due = payload.get("service_due", "service")
     available_slots = payload.get("available_slots", [])
     days_overdue = payload.get("days_overdue", 30)
-    offer_deadline = payload.get("offer_deadline", "Friday")
+    offer_deadline = payload.get("offer_deadline", "this Friday")
+    last_visit = payload.get("last_visit", "")
     
-    # Get offer that matches (or default)
+    # Get offer that matches
     merchant_offers = [o for o in merchant.get("offers", []) if o.get("status") == "active"]
-    offer_price = ""
+    offer_str = ""
     if merchant_offers:
         offer = merchant_offers[0]
-        offer_price = f"₹{offer.get('price', 'special price')}"
+        title = offer.get("title", "")
+        price = offer.get("price")
+        if title and price:
+            offer_str = f" {title} at ₹{price}."
+        elif title:
+            offer_str = f" {title} available."
     
     # Build slots string
     slots_str = ""
     if available_slots:
-        slots_str = " or ".join([s.get("label", "") for s in available_slots[:2]])
+        slot_labels = [s.get("label", "") for s in available_slots[:3] if s.get("label")]
+        if slot_labels:
+            slots_str = " Available: " + ", ".join(slot_labels) + "."
     
-    # Add overdue urgency
-    urgency_text = f"Your {service_due} is {days_overdue} days overdue!" if days_overdue >= 7 else f"Your {service_due} is due."
+    # Build overdue context
+    if days_overdue >= 30:
+        urgency = f"Your {service_due} is {days_overdue} days overdue."
+    elif days_overdue >= 7:
+        urgency = f"Your {service_due} was due {days_overdue} days ago."
+    else:
+        urgency = f"Your {service_due} is coming up."
     
-    body = f"Hi {customer_name}, {urgency_text} {merchant_name} here. Book before {offer_deadline}? Slots: {slots_str}. {offer_price} + add-on. Reply 1, 2, or your time."
+    last_visit_str = f" Last visit: {last_visit}." if last_visit else ""
+    
+    body = f"Hi {customer_name}, {urgency}{last_visit_str} {merchant_owner} at {merchant_name} can see you before {offer_deadline}.{offer_str}{slots_str} Reply with your preferred day and time."
+    
+    body = CategoryVoice.apply_voice(body, category_slug)
     
     return ComposedMessage(
         body=body,
